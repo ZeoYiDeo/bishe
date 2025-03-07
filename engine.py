@@ -1,223 +1,244 @@
 import torch
-from utils import *
+import torch.nn as nn
 import numpy as np
+import logging
+from torch.utils.data import DataLoader, TensorDataset
 import copy
-from data import UserItemRatingDataset
-from torch.utils.data import DataLoader
+from typing import Dict, List, Tuple
+import gc
+from tqdm import tqdm
 
 
-class Engine(object):
-    """Meta Engine for training & evaluating NCF model
-
-    Note: Subclass should implement self.client_model and self.server_model!
-    """
+class Engine:
+    """Base Engine class for training and evaluating recommendation models"""
 
     def __init__(self, config):
-        self.config = config  # model configuration
-        self.server_opt = torch.optim.Adam(self.server_model.parameters(), lr=config['lr_server'],
-                                           weight_decay=config['l2_regularization'])
-        self.server_model_param = {}
+        self.config = config
         self.client_model_params = {}
-        self.client_crit = torch.nn.BCELoss()
-        self.server_crit = torch.nn.MSELoss()
+        self.server_model_param = None
+        # 使用混合精度训练
+        self.scaler = torch.cuda.amp.GradScaler()
+        # 设置内存管理
+        torch.cuda.empty_cache()
+        if config['use_cuda']:
+            torch.backends.cudnn.benchmark = True
 
-    def instance_user_train_loader(self, user_train_data):
-        """instance a user's train loader."""
-        dataset = UserItemRatingDataset(user_tensor=torch.LongTensor(user_train_data[0]),
-                                        item_tensor=torch.LongTensor(user_train_data[1]),
-                                        target_tensor=torch.FloatTensor(user_train_data[2]))
-        return DataLoader(dataset, batch_size=64, shuffle=True)
+    def instance_user_train_loader(self, user_train_data: np.ndarray) -> DataLoader:
+        """创建用户训练数据加载器，优化内存使用"""
+        user_ids = torch.LongTensor(user_train_data[:, 1])
+        item_ids = torch.LongTensor(user_train_data[:, 0])
 
+        # 使用 TensorDataset 提高效率
+        dataset = TensorDataset(user_ids, item_ids)
+        return DataLoader(
+            dataset,
+            batch_size=self.config['batch_size'],
+            shuffle=True,
+            pin_memory=True,
+            num_workers=4
+        )
 
-    def fed_train_single_batch(self, model_client, batch_data, optimizers):
-        """train a batch and return an updated model."""
-        # load batch data.
-        _, items, ratings,cv,ct = batch_data[0], batch_data[1], batch_data[2], batch_data[3], batch_data[4]
-        ratings = ratings.float()
-        # reg_item_embedding = copy.deepcopy(self.server_model_param['global_item_rep'])  #服务器的全局物品表示，用于计算后续的2正则化项
+    def _move_to_device(self, data: torch.Tensor) -> torch.Tensor:
+        """将数据移动到适当的设备（GPU/CPU）"""
+        if self.config['use_cuda'] and not data.is_cuda:
+            return data.cuda(non_blocking=True)
+        return data
 
-        if self.config['use_cuda'] is True:
-            items, ratings = items.cuda(), ratings.cuda()
-            # reg_item_embedding = reg_item_embedding.cuda()
+    def _release_memory(self):
+        """释放不需要的内存"""
+        gc.collect()
+        torch.cuda.empty_cache()
 
-        optimizer, optimizer_u, optimizer_i = optimizers  #分别为客户端的优化器、用户嵌入的优化器、物品嵌入的优化器
-        # update score function.
+    @torch.cuda.amp.autocast()
+    def fed_train_single_batch(self, model: nn.Module, batch: Tuple[torch.Tensor], optimizers: List) -> nn.Module:
+        """单批次联邦学习训练"""
+        optimizer, optimizer_u, optimizer_i = optimizers
+
+        # 清除梯度
         optimizer.zero_grad()
         optimizer_u.zero_grad()
         optimizer_i.zero_grad()
-        ratings_pred = model_client(cv,ct)
-        loss = self.client_crit(ratings_pred.view(-1), ratings)  #计算损失值。self.client_crit 是一个损失函数（从之前的代码可知，可能是 torch.nn.BCELoss()），ratings_pred.view(-1) 将预测的评分展平为一维张量，然后与真实的评分 ratings 计算损失。
-        print("\r loss is {:.4f}".format(loss.item()), end='')
-        # regularization_term = compute_regularization(model_client, reg_item_embedding)  #计算2正则化项。
-        # loss += self.config['reg'] * regularization_term
-        loss.backward()
-        optimizer.step()
-        optimizer_u.step()
-        optimizer_i.step()
-        return model_client
 
-    def aggregate_clients_params(self, round_user_params, item_cv_features, item_text_features):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
-        """receive client models' parameters in a round, aggregate them and store the aggregated result for server."""
-        # aggregate item embedding and score function via averaged aggregation.
-        t = 0
-        for user in round_user_params.keys():   #遍历 round_user_params 字典的所有键，这些键代表不同的用户。
-            # load a user's parameters.
-            user_params = round_user_params[user]
-            # print(user_params)
-            if t == 0:
-                self.server_model_param = copy.deepcopy(user_params)
-            else:
-                for key in user_params.keys():
-                    self.server_model_param[key].data += user_params[key].data
-            t += 1
-        for key in self.server_model_param.keys():
-            self.server_model_param[key].data = self.server_model_param[key].data / len(round_user_params)
+        # 将数据移到GPU
+        batch = [self._move_to_device(b) for b in batch]
 
-        # train the item representation learning module.
-        # item_cv_content = torch.tensor(item_cv_features)
-        # item_text_content = torch.tensor(item_text_features)
-        # target = self.server_model_param['embedding_item.weight'].data
-        # if self.config['use_cuda'] is True:
-        #     item_cv_content = item_cv_content.cuda()
-        #     item_text_content = item_text_content.cuda()
-        #     target = target.cuda()
-        # self.server_model.train()
-        # for epoch in range(self.config['server_epoch']):
-        #     self.server_opt.zero_grad()
-        #     logit_rep = self.server_model(item_cv_content, item_text_content)
-        #     loss = self.server_crit(logit_rep, target)
-        #     loss.backward()
-        #     self.server_opt.step()
+        # 前向传播
+        loss = model(*batch)
 
-        # store the global item representation learned by server model.
-        # self.server_model.eval()
-        # with torch.no_grad():
-        #     global_item_rep = self.server_model(item_cv_content, item_text_content)
-        # self.server_model_param['global_item_rep'] = global_item_rep
+        # 使用混合精度训练
+        self.scaler.scale(loss).backward()
 
+        # 更新参数
+        self.scaler.step(optimizer)
+        self.scaler.step(optimizer_u)
+        self.scaler.step(optimizer_i)
 
-    def fed_train_a_round(self, user_ids, all_train_data, round_id, item_cv_features, item_text_features):
-        """train a round."""
-        # sample users participating in single round.
-        if self.config['clients_sample_ratio'] <= 1:
-            num_participants = int(self.config['num_users'] * self.config['clients_sample_ratio'])
-            participants = np.random.choice(user_ids, num_participants, replace=False)
-        else:
-            participants = np.random.choice(user_ids, self.config['clients_sample_num'], replace=False)
+        self.scaler.update()
 
-        # initialize server parameters for the first round.
-        # if round_id == 0:
-        #     item_cv_content = torch.tensor(item_cv_features)
-        #     item_text_content = torch.tensor(item_text_features)
-        #     if self.config['use_cuda'] is True:
-        #         item_cv_content = item_cv_content.cuda()
-        #         item_text_content = item_text_content.cuda()
-        #     self.server_model.eval()
-        #     with torch.no_grad():
-        #         global_item_rep = self.server_model(item_cv_content, item_text_content)
-        #     self.server_model_param['global_item_rep'] = global_item_rep
+        return model
 
-        # store users' model parameters of current round.
+    def aggregate_clients_params(self, round_user_params: Dict, item_cv_features: np.ndarray,
+                                 item_text_features: np.ndarray):
+        """聚合客户端参数"""
+        if not round_user_params:
+            return
+
+        # 使用高效的参数聚合方法
+        param_keys = next(iter(round_user_params.values())).keys()
+        num_clients = len(round_user_params)
+
+        # 初始化聚合参数
+        self.server_model_param = {}
+        for key in param_keys:
+            # 使用第一个客户端的参数作为初始值
+            first_client = next(iter(round_user_params.values()))
+            aggregated_param = first_client[key].clone()
+
+            # 累加其他客户端的参数
+            for client_params in list(round_user_params.values())[1:]:
+                aggregated_param.add_(client_params[key])
+
+            # 计算平均值
+            aggregated_param.div_(num_clients)
+            self.server_model_param[key] = aggregated_param
+
+    def fed_train_a_round(self, user_ids: List[int], all_train_data: Dict, round_id: int,
+                          item_cv_features: np.ndarray, item_text_features: np.ndarray):
+        """训练一轮联邦学习"""
+        # 采样参与训练的用户
+        num_participants = int(self.config['num_users'] * self.config['clients_sample_ratio']) \
+            if self.config['clients_sample_ratio'] <= 1 else self.config['clients_sample_num']
+        participants = np.random.choice(user_ids, num_participants, replace=False)
+
+        # 将特征数据转换为张量并移到GPU
+        item_cv_features = torch.tensor(item_cv_features, device='cuda' if self.config['use_cuda'] else 'cpu')
+        item_text_features = torch.tensor(item_text_features, device='cuda' if self.config['use_cuda'] else 'cpu')
+
+        # 存储参与者的模型参数
         round_participant_params = {}
-        # perform model update for each participated user.
-        for user in participants:
-            # copy the client model architecture from self.client_model
-            model_client = copy.deepcopy(self.client_model)
-            # for the first round, client models copy initialized parameters directly.
-            # for other rounds, client models receive updated item embedding from server.
-            if round_id != 0:
-                user_param_dict = copy.deepcopy(self.client_model.state_dict())
-                if user in self.client_model_params.keys():
-                    for key in self.client_model_params[user].keys():
-                        user_param_dict[key] = copy.deepcopy(self.client_model_params[user][key].data).cuda()
-                user_param_dict['embedding_item.weight'] = copy.deepcopy(self.server_model_param['embedding_item.weight'].data).cuda()
-                model_client.load_state_dict(user_param_dict)
-            # Defining optimizers
-            # optimizer is responsible for updating score function.
-            optimizer = torch.optim.SGD(
-                [{"params": model_client.fc_layers.parameters()},
-                 {"params": model_client.affine_output.parameters()}],
-                lr=self.config['lr_client'])  # MLP optimizer
-            # optimizer_u is responsible for updating user embedding.
-            optimizer_u = torch.optim.SGD(model_client.embedding_user.parameters(),
-                                          lr=self.config['lr_client'] / self.config['clients_sample_ratio'] * self.config['lr_eta'] - self.config['lr_client'])  # User optimizer
-            # optimizer_i is responsible for updating item embedding.
-            optimizer_i = torch.optim.SGD(model_client.embedding_item.parameters(),
-                                          lr=self.config['lr_client'] * self.config['num_items_train'] * self.config['lr_eta'] -self.config['lr_client'])  # Item optimizer
+
+        # 训练每个参与者的模型
+        for user in tqdm(participants, desc=f"Training Round {round_id}"):
+            # 避免完整的模型复制
+            model_client = self.client_model
+
+            if round_id > 0:
+                # 只更新必要的参数
+                if user in self.client_model_params:
+                    for key, param in self.client_model_params[user].items():
+                        getattr(model_client, key).data.copy_(param.data.cuda())
+
+                # 更新服务器端参数
+                if self.server_model_param is not None:
+                    model_client.embedding_item.weight.data.copy_(
+                        self.server_model_param['embedding_item.weight'].data.cuda()
+                    )
+
+            # 设置优化器
+            optimizer = torch.optim.SGD([
+                {"params": model_client.network.parameters()},
+                {"params": model_client.output.parameters()}
+            ], lr=self.config['lr_client'])
+
+            optimizer_u = torch.optim.SGD(
+                model_client.embedding_user.parameters(),
+                lr=self.config['lr_client'] / self.config['clients_sample_ratio'] * self.config['lr_eta']
+            )
+
+            optimizer_i = torch.optim.SGD(
+                model_client.embedding_item.parameters(),
+                lr=self.config['lr_client'] * self.config['num_items_train'] * self.config['lr_eta']
+            )
+
             optimizers = [optimizer, optimizer_u, optimizer_i]
 
-            # load current user's training data and instance a train loader.
-            user_train_data = all_train_data[user]
-            user_dataloader = self.instance_user_train_loader(user_train_data)
+            # 训练用户模型
             model_client.train()
-            # update client model.
-            for epoch in range(self.config['local_epoch']):
-                for batch_id, batch in enumerate(user_dataloader):
-                    assert isinstance(batch[0], torch.LongTensor)  #检查批次数据的类型是否为 torch.LongTensor，如果不是则会抛出 AssertionError。
+            user_dataloader = self.instance_user_train_loader(all_train_data[user])
+
+            for _ in range(self.config['local_epoch']):
+                for batch in user_dataloader:
                     model_client = self.fed_train_single_batch(model_client, batch, optimizers)
-            # obtain client model parameters.
-            client_param = model_client.state_dict()
-            # store client models' local parameters for personalization.
-            self.client_model_params[user] = {}
-            for key in client_param.keys():
-                if key != 'embedding_item.weight':
-                    self.client_model_params[user][key] = copy.deepcopy(client_param[key].data).cpu()
-            # store client models' local parameters for global update.
-            round_participant_params[user] = {}
-            round_participant_params[user]['embedding_item.weight'] = copy.deepcopy(
-                client_param['embedding_item.weight']).data.cpu()
-        # aggregate client models in server side.
+
+            # 保存用户模型参数
+            self.client_model_params[user] = {
+                k: v.data.cpu() for k, v in model_client.state_dict().items()
+                if k != 'embedding_item.weight'
+            }
+
+            round_participant_params[user] = {
+                'embedding_item.weight': model_client.embedding_item.weight.data.cpu()
+            }
+
+            # 定期清理内存
+            if len(round_participant_params) % 100 == 0:
+                self._release_memory()
+
+        # 聚合参数
         self.aggregate_clients_params(round_participant_params, item_cv_features, item_text_features)
 
+        # 清理本轮内存
+        self._release_memory()
 
-    def fed_evaluate(self, evaluate_data, item_cv_features, item_text_features, item_ids_map,is_test=True):
-        """evaluate all client models' performance using testing data."""
-        """input: 
-        evaluate_data: (uid, iid) dataframe.
-        item_content: evaluated item raw feature.
-        item_ids_map: {ori_id: reindex_id} dict.
-           output:
-        recall, precision, ndcg
-        """
-
+    def fed_evaluate(self, evaluate_data, item_cv_features, item_text_features, item_ids_map, is_test=True):
+        """评估联邦学习模型"""
         print(f"\n开始{'测试集' if is_test else '验证集'}评估")
-        print(f"评估数据大小: {len(evaluate_data)}")
-        print(f"物品特征数量: {len(item_cv_features)}")
-        print(f"物品映射大小: {len(item_ids_map)}")
 
-        item_cv_content = torch.tensor(item_cv_features)
-        item_text_content = torch.tensor(item_text_features)
-        # if self.config['use_cuda'] is True:
-        #     item_cv_content = item_cv_content.cuda()
-        #     item_text_content = item_text_content.cuda()
+        # 将特征数据转换为张量
+        item_cv_content = self._move_to_device(torch.tensor(item_cv_features))
+        item_text_content = self._move_to_device(torch.tensor(item_text_features))
 
-        # obtain cold-start items' latent representation via server model.
-        # current_model = copy.deepcopy(self.server_model)
-        # current_model.eval()
-        # with torch.no_grad():
-        #     item_rep = current_model(item_cv_content, item_text_content)
-
-        # obtain cola-start items' prediction for each user.
+        # 获取唯一用户ID
         user_ids = evaluate_data['uid'].unique()
         user_item_preds = {}
-        for user in user_ids:
-            user_model = copy.deepcopy(self.client_model)
-            user_param_dict = copy.deepcopy(self.client_model.state_dict())
-            if user in self.client_model_params.keys():
-                for key in self.client_model_params[user].keys():
-                    user_param_dict[key] = copy.deepcopy(self.client_model_params[user][key].data).cuda()
-            user_model.load_state_dict(user_param_dict)
-            user_model.eval()
-            with torch.no_grad():
-                cold_pred = user_model(item_cv_content, item_text_content)
-                user_item_preds[user] = cold_pred.view(-1)
 
-        # compute the evaluation metrics.
-        recall, precision, ndcg =compute_metrics(
+        # 批量处理预测
+        batch_size = 128
+        for i in range(0, len(user_ids), batch_size):
+            batch_users = user_ids[i:i + batch_size]
+
+            for user in batch_users:
+                # 使用用户模型进行预测
+                user_model = self.client_model
+                if user in self.client_model_params:
+                    user_param_dict = copy.deepcopy(self.client_model.state_dict())
+                    for key, param in self.client_model_params[user].items():
+                        user_param_dict[key] = param.cuda()
+                    user_model.load_state_dict(user_param_dict)
+
+                user_model.eval()
+                with torch.no_grad(), torch.cuda.amp.autocast():
+                    predictions = user_model(item_cv_content, item_text_content)
+                    user_item_preds[user] = predictions.cpu()
+
+            # 定期清理内存
+            if i % (batch_size * 10) == 0:
+                self._release_memory()
+
+        # 计算评估指标
+        recall, precision, ndcg = self._compute_metrics(
             evaluate_data,
             user_item_preds,
             item_ids_map,
-            self.config['recall_k'],
-            is_test = is_test
+            self.config['recall_k']
         )
+
         return recall, precision, ndcg
+
+    def _compute_metrics(self, data, predictions, item_map, k_values):
+        """计算评估指标"""
+        recalls = []
+        precisions = []
+        ndcgs = []
+
+        for k in k_values:
+            # 计算每个k值的指标
+            recall_k = self._compute_recall_at_k(data, predictions, item_map, k)
+            precision_k = self._compute_precision_at_k(data, predictions, item_map, k)
+            ndcg_k = self._compute_ndcg_at_k(data, predictions, item_map, k)
+
+            recalls.append(recall_k)
+            precisions.append(precision_k)
+            ndcgs.append(ndcg_k)
+
+        return recalls, precisions, ndcgs

@@ -7,79 +7,66 @@ class Client(torch.nn.Module):
         super(Client, self).__init__()
         self.config = config
         self.num_items_train = config['num_items_train']
-        self.num_items_test = config['num_items_test']  # 添加测试集物品数量
-        self.num_items_vali = config['num_items_vali']  # 添加验证集物品数量
+        self.num_items_test = config['num_items_test']
+        self.num_items_vali = config['num_items_vali']
         self.latent_dim = config['latent_dim']
-        self.relu = torch.nn.ReLU()
 
-        # 保留embedding_item，但改变其用途
+        # 减小 embedding 维度
         self.embedding_user = torch.nn.Embedding(num_embeddings=1, embedding_dim=self.latent_dim)
-        self.embedding_item = torch.nn.Linear(in_features=768 * 2, out_features=self.latent_dim)
+        # 使用更小的中间维度
+        self.embedding_item = torch.nn.Sequential(
+            torch.nn.Linear(768 * 2, 512),
+            torch.nn.ReLU(),
+            torch.nn.Linear(512, self.latent_dim)
+        )
 
-        # 创建多层网络结构
-        self.fc_layers = torch.nn.ModuleList()
-        self.batch_norms = torch.nn.ModuleList()
+        # 优化网络结构
+        layers = [int(x) for x in config['client_model_layers'].split(',')] if isinstance(config['client_model_layers'],
+                                                                                          str) else config[
+            'client_model_layers']
 
-        # 解析层配置
-        if isinstance(config['client_model_layers'], str):
-            layers = [int(x) for x in config['client_model_layers'].split(',')]
-        else:
-            layers = config['client_model_layers']
-
-        # 构建网络层（第一层处理latent_dim维度的输入）
+        self.network = torch.nn.ModuleList()
         input_dim = self.latent_dim
+
         for output_dim in layers:
-            self.fc_layers.append(torch.nn.Linear(input_dim, output_dim))
-            self.batch_norms.append(torch.nn.BatchNorm1d(output_dim))
+            layer = torch.nn.Sequential(
+                torch.nn.Linear(input_dim, output_dim),
+                torch.nn.BatchNorm1d(output_dim),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(0.2)
+            )
+            self.network.append(layer)
             input_dim = output_dim
 
-        # 最终输出层
-        self.affine_output = torch.nn.Linear(in_features=layers[-1], out_features=1)
-        self.dropout = torch.nn.Dropout(0.2)
-        self.logistic = torch.nn.Sigmoid()
+        self.output = torch.nn.Sequential(
+            torch.nn.Linear(layers[-1], 1),
+            torch.nn.Sigmoid()
+        )
 
+    @torch.cuda.amp.autocast()  # 使用混合精度训练
     def forward(self, item_cv, item_txt):
-        # 先通过embedding_item处理特征
-        item_fet = self.relu(torch.cat([item_cv, item_txt], dim=-1)).cuda()
+        # 合并特征并移动到 GPU
+        item_fet = torch.cat([item_cv, item_txt], dim=-1)
+        if self.training and item_fet.device.type != 'cuda':
+            item_fet = item_fet.cuda()
+
+        # 特征提取
         item_embedding = self.embedding_item(item_fet)
 
-        # 通过多层网络
+        # 通过网络层
         vector = item_embedding
-        for idx in range(len(self.fc_layers)):
-            vector = self.fc_layers[idx](vector)
-            vector = self.batch_norms[idx](vector)
-            vector = self.relu(vector)
-            vector = self.dropout(vector)
+        for layer in self.network:
+            vector = layer(vector)
 
-        # 最终输出
-        logits = self.affine_output(vector)
-        rating = self.logistic(logits)
+        # 输出预测
+        rating = self.output(vector)
 
         if self.training:
             max_idx = self.num_items_train
         else:
-            # 根据评估阶段使用不同的最大索引
-            max_idx = self.num_items_test  # 或 self.num_items_vali
+            max_idx = self.num_items_test if self.config.get('is_test', True) else self.num_items_vali
 
-        rating = torch.clamp(rating, 0, max_idx - 1)
-        return rating
-
-    def cold_predict(self, item_embedding):
-        # 处理冷启动预测
-        user_embedding = self.embedding_user(torch.tensor([0] * item_embedding.shape[0]).cuda())
-        vector = item_embedding  # 直接使用传入的item_embedding
-
-        # 通过多层网络
-        for idx in range(len(self.fc_layers)):
-            vector = self.fc_layers[idx](vector)
-            vector = self.batch_norms[idx](vector)
-            vector = self.relu(vector)
-            vector = self.dropout(vector)
-
-        logits = self.affine_output(vector)
-        rating = self.logistic(logits)
-        rating = torch.clamp(rating, 0, self.num_items_test - 1)  # 用于测试集
-        return rating
+        return torch.clamp(rating, 0, max_idx - 1)
 
     def init_weight(self):
         pass

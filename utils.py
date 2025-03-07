@@ -145,80 +145,81 @@ def load_data(data_file):
     id_data = pd.read_csv(data_file+'/Bili_Food_pair.csv',header=None,usecols=[0,1])
     id_data.columns = ['iid', 'uid']
 
+    def load_data(data_file):
+        id_data = pd.read_csv(data_file + '/Bili_Food_pair.csv', header=None, usecols=[0, 1])
+        id_data.columns = ['iid', 'uid']
 
-    user_ids = list(set(id_data.iloc[:,1]))
-    item_ids = list(set(id_data.iloc[:,0]))
+        user_ids = list(set(id_data.iloc[:, 1]))
+        item_ids = list(set(id_data.iloc[:, 0]))
 
-    item_img_dict = torch.load("../data/Bili_Food/Bili_Food_vit.pt")
-    item_text_dict = torch.load("../data/Bili_Food/Bili_Food_bert.pt")
+        # 使用生成器加载特征文件
+        def load_features_generator(feature_file):
+            features_dict = torch.load(feature_file)
+            for key in sorted(features_dict.keys()):
+                yield int(key), features_dict[key]
 
-    item_img_features = {int(keys): v  for keys,v in item_img_dict.items()}
-    item_text_features = {int(keys): v  for keys,v in item_text_dict.items()}
+        # 分批构建特征矩阵
+        def build_feature_matrix(feature_gen, item_ids, batch_size=1000):
+            matrices = []
+            for i in range(0, len(item_ids), batch_size):
+                batch_ids = item_ids[i:i + batch_size]
+                batch_features = []
+                for item_id in batch_ids:
+                    _, feature = next(feature_gen)
+                    batch_features.append(feature)
+                matrices.append(torch.stack(batch_features))
+            return torch.cat(matrices)
 
-    # 获取排序后的物品ID列表（确保顺序一致）
-    sorted_item_ids = sorted(item_ids)
+        # 分批加载特征
+        img_gen = load_features_generator("../data/Bili_Food/Bili_Food_vit.pt")
+        text_gen = load_features_generator("../data/Bili_Food/Bili_Food_bert.pt")
 
-    # 转换为二维张量矩阵 [num_items, feature_dim]
-    img_feature_matrix = torch.stack([item_img_features[iid] for iid in sorted_item_ids])
-    text_feature_matrix = torch.stack([item_text_features[iid] for iid in sorted_item_ids])
+        sorted_item_ids = sorted(item_ids)
+        img_feature_matrix = build_feature_matrix(img_gen, sorted_item_ids)
+        text_feature_matrix = build_feature_matrix(text_gen, sorted_item_ids)
 
-    # 如果需要numpy格式
-    img_feature_array = img_feature_matrix.numpy()
-    text_feature_array = text_feature_matrix.numpy()
+        # 读取数据集
+        train_data = pd.read_csv(data_file + '/train.csv', header=None)
+        valid_data = pd.read_csv(data_file + '/vali.csv', header=None)
+        test_data = pd.read_csv(data_file + '/test.csv', header=None)
 
-    # 读取训练数据
-    train_id_data = pd.read_csv(data_file + '/train.csv', header=None)
-    train_id_data.columns = ['iid', 'uid']
+        train_data.columns = valid_data.columns = test_data.columns = ['iid', 'uid']
 
+        # 构建索引映射
+        train_item_ids = sorted(list(set(train_data.iloc[:, 0])))
+        test_item_ids = sorted(list(set(test_data.iloc[:, 0])))
+        valid_item_ids = sorted(list(set(valid_data.iloc[:, 0])))
 
+        train_item_ids_map = {iid: i for i, iid in enumerate(train_item_ids)}
+        test_item_ids_map = {iid: i for i, iid in enumerate(test_item_ids)}
+        vali_item_ids_map = {iid: i for i, iid in enumerate(valid_item_ids)}
 
-    # train_item_ids = list(set(train_id_data.iloc[:, 0]))
+        # 使用索引获取特征
+        train_img_features = img_feature_matrix[train_data['iid'].values]
+        train_text_features = text_feature_matrix[train_data['iid'].values]
 
-    train_img_features = img_feature_array[train_id_data['iid'].values]
-    train_text_features = text_feature_array[train_id_data['iid'].values]
-    # train_item_ids_map = {iid: i for i, iid in enumerate(train_item_ids)}
+        test_img_features = img_feature_matrix[test_data['iid'].values]
+        test_text_features = text_feature_matrix[test_data['iid'].values]
 
-    # 读取测试数据
-    test_id_data = pd.read_csv(data_file + '/test.csv', header=None)
-    test_id_data.columns = ['iid', 'uid']
+        valid_img_features = img_feature_matrix[valid_data['iid'].values]
+        valid_text_features = text_feature_matrix[valid_data['iid'].values]
 
-    # test_item_ids = list(set(test_id_data.iloc[:, 0]))
-
-    test_img_features = img_feature_array[test_id_data['iid'].values]
-    test_text_features = text_feature_array[test_id_data['iid'].values]
-    # test_item_ids_map = {iid: i for i, iid in enumerate(test_item_ids)}
-
-    # 读取验证数据
-    valid_id_data = pd.read_csv(data_file + '/vali.csv', header=None)
-    valid_id_data.columns = ['iid', 'uid']
-
-    # valid_item_ids = list(set(valid_id_data.iloc[:, 0]))
-
-    valid_img_features = img_feature_array[valid_id_data['iid'].values]
-    valid_text_features = text_feature_array[valid_id_data['iid'].values]
-    # vali_item_ids_map = {iid: i for i, iid in enumerate(valid_item_ids)}
-
-
-    train_item_ids = sorted(list(set(train_id_data.iloc[:, 0])))
-    test_item_ids = sorted(list(set(test_id_data.iloc[:, 0])))
-    valid_item_ids = sorted(list(set(valid_id_data.iloc[:, 0])))
-
-    # 创建连续的映射，范围与配置匹配
-    train_item_ids_map = {iid: i for i, iid in enumerate(train_item_ids)}
-    test_item_ids_map = {iid: i for i, iid in enumerate(test_item_ids)}
-    vali_item_ids_map = {iid: i for i, iid in enumerate(valid_item_ids)}
-
-    # 添加验证代码
-    assert len(train_item_ids_map) <= 13584, f"训练集映射大小 ({len(train_item_ids_map)}) 超过配置值 (13584)"
-    assert len(test_item_ids_map) <= 2378, f"测试集映射大小 ({len(test_item_ids_map)}) 超过配置值 (2378)"
-    assert len(vali_item_ids_map) <= 2378, f"验证集映射大小 ({len(vali_item_ids_map)}) 超过配置值 (2378)"
-
-    data_dict = {'train_data':train_id_data,'train_img_features':train_img_features,'train_text_features':train_text_features,'train_item_ids_map':train_item_ids_map,
-                 'test_data':test_id_data,'test_img_features':test_img_features,'test_text_features':test_text_features,'test_item_ids_map':test_item_ids_map,
-                 'valid_data':valid_id_data,'valid_img_features':valid_img_features,'valid_text_features':valid_text_features,'vali_item_ids_map':vali_item_ids_map,
-                 'user_ids':user_ids,'item_ids':item_ids
-                 }
-    return data_dict
+        return {
+            'train_data': train_data,
+            'train_img_features': train_img_features,
+            'train_text_features': train_text_features,
+            'train_item_ids_map': train_item_ids_map,
+            'test_data': test_data,
+            'test_img_features': test_img_features,
+            'test_text_features': test_text_features,
+            'test_item_ids_map': test_item_ids_map,
+            'valid_data': valid_data,
+            'valid_img_features': valid_img_features,
+            'valid_text_features': valid_text_features,
+            'vali_item_ids_map': vali_item_ids_map,
+            'user_ids': user_ids,
+            'item_ids': item_ids
+        }
 
 
 def negative_sampling(train_data, num_negatives):
