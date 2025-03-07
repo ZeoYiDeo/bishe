@@ -36,7 +36,6 @@ parser.add_argument('--recall_k', type=str, default='20,50,100')
 parser.add_argument('--l2_regularization', type=float, default=0.)
 parser.add_argument('--use_cuda', type=bool, default=True)
 parser.add_argument('--device_id', type=int, default=1)
-
 args = parser.parse_args()
 
 # Model.

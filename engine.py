@@ -47,16 +47,16 @@ class Engine(object):
         optimizer_i.zero_grad()
         ratings_pred = model_client(cv,ct)
         loss = self.client_crit(ratings_pred.view(-1), ratings)  #计算损失值。self.client_crit 是一个损失函数（从之前的代码可知，可能是 torch.nn.BCELoss()），ratings_pred.view(-1) 将预测的评分展平为一维张量，然后与真实的评分 ratings 计算损失。
-        print("\r loss is {:.4f}".format( loss.item()), end='')
+        print("\r loss is {:.4f}".format(loss.item()), end='')
         # regularization_term = compute_regularization(model_client, reg_item_embedding)  #计算2正则化项。
         # loss += self.config['reg'] * regularization_term
-        # loss.backward()
-        # optimizer.step()
-        # optimizer_u.step()
-        # optimizer_i.step()
+        loss.backward()
+        optimizer.step()
+        optimizer_u.step()
+        optimizer_i.step()
         return model_client
 
-    def aggregate_clients_params(self, round_user_params, item_cv_features, item_text_features):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
+    def aggregate_clients_params(self, round_user_params):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
         """receive client models' parameters in a round, aggregate them and store the aggregated result for server."""
         # aggregate item embedding and score function via averaged aggregation.
         t = 0
@@ -73,7 +73,7 @@ class Engine(object):
         for key in self.server_model_param.keys():
             self.server_model_param[key].data = self.server_model_param[key].data / len(round_user_params)
 
-        # # train the item representation learning module.
+        # train the item representation learning module.
         # item_cv_content = torch.tensor(item_cv_features)
         # item_text_content = torch.tensor(item_text_features)
         # target = self.server_model_param['embedding_item.weight'].data
@@ -88,8 +88,8 @@ class Engine(object):
         #     loss = self.server_crit(logit_rep, target)
         #     loss.backward()
         #     self.server_opt.step()
-        #
-        # # store the global item representation learned by server model.
+
+        # store the global item representation learned by server model.
         # self.server_model.eval()
         # with torch.no_grad():
         #     global_item_rep = self.server_model(item_cv_content, item_text_content)
@@ -170,7 +170,7 @@ class Engine(object):
         self.aggregate_clients_params(round_participant_params, item_cv_features, item_text_features)
 
 
-    def fed_evaluate(self, evaluate_data, item_cv_features, item_text_features, item_ids_map):
+    def fed_evaluate(self, evaluate_data, item_cv_features, item_text_features, item_ids_map,is_test=True):
         """evaluate all client models' performance using testing data."""
         """input: 
         evaluate_data: (uid, iid) dataframe.
@@ -179,17 +179,23 @@ class Engine(object):
            output:
         recall, precision, ndcg
         """
+
+        print(f"\n开始{'测试集' if is_test else '验证集'}评估")
+        print(f"评估数据大小: {len(evaluate_data)}")
+        print(f"物品特征数量: {len(item_cv_features)}")
+        print(f"物品映射大小: {len(item_ids_map)}")
+
         item_cv_content = torch.tensor(item_cv_features)
         item_text_content = torch.tensor(item_text_features)
-        if self.config['use_cuda'] is True:
-            item_content = item_cv_content.cuda()
-            item_text_content = item_text_content.cuda()
+        # if self.config['use_cuda'] is True:
+        #     item_cv_content = item_cv_content.cuda()
+        #     item_text_content = item_text_content.cuda()
 
         # obtain cold-start items' latent representation via server model.
-        current_model = copy.deepcopy(self.server_model)
-        current_model.eval()
-        with torch.no_grad():
-            item_rep = current_model(item_cv_content, item_text_content)
+        # current_model = copy.deepcopy(self.server_model)
+        # current_model.eval()
+        # with torch.no_grad():
+        #     item_rep = current_model(item_cv_content, item_text_content)
 
         # obtain cola-start items' prediction for each user.
         user_ids = evaluate_data['uid'].unique()
@@ -207,5 +213,11 @@ class Engine(object):
                 user_item_preds[user] = cold_pred.view(-1)
 
         # compute the evaluation metrics.
-        recall, precision, ndcg = compute_metrics(evaluate_data, user_item_preds, item_ids_map, self.config['recall_k'])
+        recall, precision, ndcg =compute_metrics(
+            evaluate_data,
+            user_item_preds,
+            item_ids_map,
+            self.config['recall_k'],
+            is_test = is_test
+        )
         return recall, precision, ndcg
