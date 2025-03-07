@@ -170,7 +170,7 @@ class Engine(object):
         self.aggregate_clients_params(round_participant_params, item_cv_features, item_text_features)
 
 
-    def fed_evaluate(self, evaluate_data, item_cv_features, item_text_features, item_ids_map):
+    def fed_evaluate(self, evaluate_data, item_cv_features, item_text_features, item_ids_map,is_test=True):
         """evaluate all client models' performance using testing data."""
         """input: 
         evaluate_data: (uid, iid) dataframe.
@@ -179,6 +179,12 @@ class Engine(object):
            output:
         recall, precision, ndcg
         """
+
+        print(f"\n开始{'测试集' if is_test else '验证集'}评估")
+        print(f"评估数据大小: {len(evaluate_data)}")
+        print(f"物品特征数量: {len(item_cv_features)}")
+        print(f"物品映射大小: {len(item_ids_map)}")
+
         item_cv_content = torch.tensor(item_cv_features)
         item_text_content = torch.tensor(item_text_features)
         # if self.config['use_cuda'] is True:
@@ -186,10 +192,10 @@ class Engine(object):
         #     item_text_content = item_text_content.cuda()
 
         # obtain cold-start items' latent representation via server model.
-        current_model = copy.deepcopy(self.server_model)
-        current_model.eval()
-        with torch.no_grad():
-            item_rep = current_model(item_cv_content, item_text_content)
+        # current_model = copy.deepcopy(self.server_model)
+        # current_model.eval()
+        # with torch.no_grad():
+        #     item_rep = current_model(item_cv_content, item_text_content)
 
         # obtain cola-start items' prediction for each user.
         user_ids = evaluate_data['uid'].unique()
@@ -203,9 +209,15 @@ class Engine(object):
             user_model.load_state_dict(user_param_dict)
             user_model.eval()
             with torch.no_grad():
-                cold_pred = user_model.cold_predict(item_rep)
+                cold_pred = user_model(item_cv_content, item_text_content)
                 user_item_preds[user] = cold_pred.view(-1)
 
         # compute the evaluation metrics.
-        recall, precision, ndcg = compute_metrics(evaluate_data, user_item_preds, item_ids_map, self.config['recall_k'])
+        recall, precision, ndcg =compute_metrics(
+            evaluate_data,
+            user_item_preds,
+            item_ids_map,
+            self.config['recall_k'],
+            is_test = is_test
+        )
         return recall, precision, ndcg

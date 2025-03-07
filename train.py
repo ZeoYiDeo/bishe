@@ -1,7 +1,7 @@
 import numpy as np
 import datetime
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 import argparse
 from mlp import MLPEngine
 from utils import *
@@ -17,9 +17,9 @@ parser.add_argument('--local_epoch', type=int, default=1)
 parser.add_argument('--server_epoch', type=int, default=1)
 parser.add_argument('--lr_eta', type=int, default=80)
 parser.add_argument('--reg', type=float, default=1.0)
-parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--batch_size', type=int, default=256)
 parser.add_argument('--optimizer', type=str, default='sgd')
-parser.add_argument('--lr_client', type=float, default=0.5)
+parser.add_argument('--lr_client', type=float, default=0.05)
 parser.add_argument('--lr_server', type=float, default=0.005)
 parser.add_argument('--dataset', type=str, default='Bili_Food')
 parser.add_argument('--num_users', type=int)
@@ -29,9 +29,10 @@ parser.add_argument('--num_items_test', type=int)
 parser.add_argument('--content_dim', type=int)
 parser.add_argument('--latent_dim', type=int, default=768)
 parser.add_argument('--num_negative', type=int, default=5)
-parser.add_argument('--server_model_layers', type=str, default='1536')
-parser.add_argument('--client_model_layers', type=str, default='1536')
-parser.add_argument('--recall_k', type=str, default='20, 50, 100')
+# 修改网络层配置
+parser.add_argument('--server_model_layers', type=str, default='1536,768,384')
+parser.add_argument('--client_model_layers', type=str, default='768,384,128')  # 从latent_dim开始
+parser.add_argument('--recall_k', type=str, default='20,50,100')
 parser.add_argument('--l2_regularization', type=float, default=0.)
 parser.add_argument('--use_cuda', type=bool, default=True)
 parser.add_argument('--device_id', type=int, default=1)
@@ -54,9 +55,9 @@ else:
 if config['dataset'] == 'Bili_Food':
     config.update({
         'num_users': 6549,
-        'num_items_train': 23584,
-        'num_items_vali': 3000,
-        'num_items_test': 3000,
+        'num_items_train': 13584,
+        'num_items_vali': 2378,
+        'num_items_test': 2378,
         'content_dim': 768,
     })
 elif config['dataset'] == 'CiteULike':
@@ -115,85 +116,85 @@ for round in range(config['num_round']):
     logging.info('-' * 80)
     logging.info('Training phase!')
     engine.fed_train_a_round(user_ids, all_train_data, round, train_item_img_features, train_item_text_features)
-    #
-    # logging.info('-' * 80)
-    # logging.info('Testing phase!')
-    # test_recall, test_precision, test_ndcg = engine.fed_evaluate(test_data, test_item_img_features, test_item_text_features, test_item_ids_map)
-    # logging.info('Recall@{} = {:.6f}, Recall@{} = {:.6f}, Recall@{} = {:.6f}'.format(
-    #     config['recall_k'][0], test_recall[0],
-    #     config['recall_k'][1], test_recall[1],
-    #     config['recall_k'][2], test_recall[2]
-    # ))
-    # logging.info('Precision@{} = {:.6f}, Precision@{} = {:.6f}, Precision@{} = {:.6f}'.format(
-    #     config['recall_k'][0], test_precision[0],
-    #     config['recall_k'][1], test_precision[1],
-    #     config['recall_k'][2], test_precision[2]
-    # ))
-    # logging.info('NDCG@{} = {:.6f}, NDCG@{} = {:.6f}, NDCG@{} = {:.6f}'.format(
-    #     config['recall_k'][0], test_ndcg[0],
-    #     config['recall_k'][1], test_ndcg[1],
-    #     config['recall_k'][2], test_ndcg[2]
-    # ))
-    # test_recalls.append(test_recall)
-    # test_precisions.append(test_precision)
-    # test_ndcgs.append(test_ndcg)
-    #
-    # logging.info('-' * 80)
-    # logging.info('Validating phase!')
-    # vali_recall, vali_precision, vali_ndcg = engine.fed_evaluate(vali_data, vali_item_img_features, vali_item_text_features, vali_item_ids_map)
-    # logging.info('Recall@{} = {:.6f}, Recall@{} = {:.6f}, Recall@{} = {:.6f}'.format(
-    #     config['recall_k'][0], vali_recall[0],
-    #     config['recall_k'][1], vali_recall[1],
-    #     config['recall_k'][2], vali_recall[2]
-    # ))
-    # logging.info('Precision@{} = {:.6f}, Precision@{} = {:.6f}, Precision@{} = {:.6f}'.format(
-    #     config['recall_k'][0], vali_precision[0],
-    #     config['recall_k'][1], vali_precision[1],
-    #     config['recall_k'][2], vali_precision[2]
-    # ))
-    # logging.info('NDCG@{} = {:.6f}, NDCG@{} = {:.6f}, NDCG@{} = {:.6f}'.format(
-    #     config['recall_k'][0], vali_ndcg[0],
-    #     config['recall_k'][1], vali_ndcg[1],
-    #     config['recall_k'][2], vali_ndcg[2]
-    # ))
-    # logging.info('')
-    # vali_recalls.append(vali_recall)
-    # vali_precisions.append(vali_precision)
-    # vali_ndcgs.append(vali_ndcg)
-    #
-    # if np.sum(vali_recall) >= np.sum(best_recall):
-    #     best_recall = vali_recall
-    #     final_test_round = round
 
-# current_time = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
-# str = current_time + '-' + 'latent_dim: ' + str(config['latent_dim']) + '-' + 'lr_client: ' + str(config['lr_client']) \
-#       + '-' + 'lr_server: ' + str(config['lr_server']) + '-' + 'local_epoch: ' + str(config['local_epoch']) + '-' + \
-#       'server_epoch: ' + str(config['server_epoch']) + '-' + 'server_model_layers: ' + \
-#       str(config['server_model_layers']) + '-' + 'client_model_layers: ' + str(config['client_model_layers']) + '-' \
-#       'clients_sample_ratio: ' + str(config['clients_sample_ratio']) + '-' + 'num_round: ' + str(config['num_round']) \
-#       + '-' + 'negatives: ' + str(config['num_negative']) + '-' + 'lr_eta: ' + str(config['lr_eta']) + '-' + \
-#       'batch_size: ' + str(config['batch_size']) + '-' + 'Recall: ' + str(test_recalls[final_test_round]) + '-' \
-#       + 'Precision: ' + str(test_precisions[final_test_round]) + '-' + 'NDCG: ' + str(test_ndcgs[final_test_round]) + '-' \
-#       + 'best_round: ' + str(final_test_round) + '-' + 'recall_k: ' + str(config['recall_k']) + '-' + \
-#       'optimizer: ' + config['optimizer'] + '-' + 'l2_regularization: ' + str(config['l2_regularization']) + '-' + \
-#       'reg: ' + str(config['reg'])
-# file_name = "sh_result/"+config['dataset']+".txt"
-# with open(file_name, 'a') as file:
-#     file.write(str + '\n')
-#
-# logging.info('fedcs')
-# logging.info('recall_list: {}'.format(test_recalls))
-# logging.info('precision_list: {}'.format(test_precisions))
-# logging.info('ndcg_list: {}'.format(test_ndcgs))
-# logging.info('clients_sample_ratio: {}, lr_eta: {}, bz: {}, lr_client: {}, lr_server: {}, local_epoch: {},'
-#              'server_epoch: {}, client_model_layers: {}, server_model_layers: {}, recall_k: {}, dataset: {}, '
-#              'factor: {}, negatives: {}, reg: {}'.format(config['clients_sample_ratio'], config['lr_eta'],
-#                                                          config['batch_size'], config['lr_client'], config['lr_server'],
-#                                                          config['local_epoch'], config['server_epoch'],
-#                                                          config['client_model_layers'], config['server_model_layers'],
-#                                                          config['recall_k'], config['dataset'], config['latent_dim'],
-#                                                          config['num_negative'], config['reg']))
-# logging.info('Best test recall: {}, precision: {}, ndcg: {} at round {}'.format(test_recalls[final_test_round],
-#                                                                                 test_precisions[final_test_round],
-#                                                                                 test_ndcgs[final_test_round],
-#                                                                                 final_test_round))
+    logging.info('-' * 80)
+    logging.info('Testing phase!')
+    test_recall, test_precision, test_ndcg = engine.fed_evaluate(test_data, test_item_img_features, test_item_text_features, test_item_ids_map,is_test=True)
+    logging.info('Recall@{} = {:.6f}, Recall@{} = {:.6f}, Recall@{} = {:.6f}'.format(
+        config['recall_k'][0], test_recall[0],
+        config['recall_k'][1], test_recall[1],
+        config['recall_k'][2], test_recall[2]
+    ))
+    logging.info('Precision@{} = {:.6f}, Precision@{} = {:.6f}, Precision@{} = {:.6f}'.format(
+        config['recall_k'][0], test_precision[0],
+        config['recall_k'][1], test_precision[1],
+        config['recall_k'][2], test_precision[2]
+    ))
+    logging.info('NDCG@{} = {:.6f}, NDCG@{} = {:.6f}, NDCG@{} = {:.6f}'.format(
+        config['recall_k'][0], test_ndcg[0],
+        config['recall_k'][1], test_ndcg[1],
+        config['recall_k'][2], test_ndcg[2]
+    ))
+    test_recalls.append(test_recall)
+    test_precisions.append(test_precision)
+    test_ndcgs.append(test_ndcg)
+
+    logging.info('-' * 80)
+    logging.info('Validating phase!')
+    vali_recall, vali_precision, vali_ndcg = engine.fed_evaluate(vali_data, vali_item_img_features, vali_item_text_features, vali_item_ids_map,is_test=False)
+    logging.info('Recall@{} = {:.6f}, Recall@{} = {:.6f}, Recall@{} = {:.6f}'.format(
+        config['recall_k'][0], vali_recall[0],
+        config['recall_k'][1], vali_recall[1],
+        config['recall_k'][2], vali_recall[2]
+    ))
+    logging.info('Precision@{} = {:.6f}, Precision@{} = {:.6f}, Precision@{} = {:.6f}'.format(
+        config['recall_k'][0], vali_precision[0],
+        config['recall_k'][1], vali_precision[1],
+        config['recall_k'][2], vali_precision[2]
+    ))
+    logging.info('NDCG@{} = {:.6f}, NDCG@{} = {:.6f}, NDCG@{} = {:.6f}'.format(
+        config['recall_k'][0], vali_ndcg[0],
+        config['recall_k'][1], vali_ndcg[1],
+        config['recall_k'][2], vali_ndcg[2]
+    ))
+    logging.info('')
+    vali_recalls.append(vali_recall)
+    vali_precisions.append(vali_precision)
+    vali_ndcgs.append(vali_ndcg)
+
+    if np.sum(vali_recall) >= np.sum(best_recall):
+        best_recall = vali_recall
+        final_test_round = round
+
+current_time = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
+str = current_time + '-' + 'latent_dim: ' + str(config['latent_dim']) + '-' + 'lr_client: ' + str(config['lr_client']) \
+      + '-' + 'lr_server: ' + str(config['lr_server']) + '-' + 'local_epoch: ' + str(config['local_epoch']) + '-' + \
+      'server_epoch: ' + str(config['server_epoch']) + '-' + 'server_model_layers: ' + \
+      str(config['server_model_layers']) + '-' + 'client_model_layers: ' + str(config['client_model_layers']) + '-' \
+      'clients_sample_ratio: ' + str(config['clients_sample_ratio']) + '-' + 'num_round: ' + str(config['num_round']) \
+      + '-' + 'negatives: ' + str(config['num_negative']) + '-' + 'lr_eta: ' + str(config['lr_eta']) + '-' + \
+      'batch_size: ' + str(config['batch_size']) + '-' + 'Recall: ' + str(test_recalls[final_test_round]) + '-' \
+      + 'Precision: ' + str(test_precisions[final_test_round]) + '-' + 'NDCG: ' + str(test_ndcgs[final_test_round]) + '-' \
+      + 'best_round: ' + str(final_test_round) + '-' + 'recall_k: ' + str(config['recall_k']) + '-' + \
+      'optimizer: ' + config['optimizer'] + '-' + 'l2_regularization: ' + str(config['l2_regularization']) + '-' + \
+      'reg: ' + str(config['reg'])
+file_name = "sh_result/"+config['dataset']+".txt"
+with open(file_name, 'a') as file:
+    file.write(str + '\n')
+
+logging.info('fedcs')
+logging.info('recall_list: {}'.format(test_recalls))
+logging.info('precision_list: {}'.format(test_precisions))
+logging.info('ndcg_list: {}'.format(test_ndcgs))
+logging.info('clients_sample_ratio: {}, lr_eta: {}, bz: {}, lr_client: {}, lr_server: {}, local_epoch: {},'
+             'server_epoch: {}, client_model_layers: {}, server_model_layers: {}, recall_k: {}, dataset: {}, '
+             'factor: {}, negatives: {}, reg: {}'.format(config['clients_sample_ratio'], config['lr_eta'],
+                                                         config['batch_size'], config['lr_client'], config['lr_server'],
+                                                         config['local_epoch'], config['server_epoch'],
+                                                         config['client_model_layers'], config['server_model_layers'],
+                                                         config['recall_k'], config['dataset'], config['latent_dim'],
+                                                         config['num_negative'], config['reg']))
+logging.info('Best test recall: {}, precision: {}, ndcg: {} at round {}'.format(test_recalls[final_test_round],
+                                                                                test_precisions[final_test_round],
+                                                                                test_ndcgs[final_test_round],
+                                                                                final_test_round))
