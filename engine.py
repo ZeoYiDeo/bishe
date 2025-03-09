@@ -56,7 +56,7 @@ class Engine(object):
         optimizer_i.step()
         return model_client
 
-    def aggregate_clients_params(self, round_user_params):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
+    def aggregate_clients_params(self, round_user_params, item_cv_features, item_text_features):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
         """receive client models' parameters in a round, aggregate them and store the aggregated result for server."""
         # aggregate item embedding and score function via averaged aggregation.
         t = 0
@@ -209,7 +209,7 @@ class Engine(object):
             user_model.load_state_dict(user_param_dict)
             user_model.eval()
             with torch.no_grad():
-                cold_pred = user_model(item_cv_content, item_text_content)
+                cold_pred = user_model.froward(item_cv_content, item_text_content)
                 user_item_preds[user] = cold_pred.view(-1)
 
         # compute the evaluation metrics.
