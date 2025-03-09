@@ -14,12 +14,12 @@ class Engine(object):
 
     def __init__(self, config):
         self.config = config  # model configuration
-        self.server_opt = torch.optim.Adam(self.server_model.parameters(), lr=config['lr_server'],
-                                           weight_decay=config['l2_regularization'])
-        self.server_model_param = {}
+        # self.server_opt = torch.optim.Adam(self.server_model.parameters(), lr=config['lr_server'],
+        #                                    weight_decay=config['l2_regularization'])
+        # self.server_model_param = {}
         self.client_model_params = {}
         self.client_crit = torch.nn.BCELoss()
-        self.server_crit = torch.nn.MSELoss()
+        # self.server_crit = torch.nn.MSELoss()
 
     def instance_user_train_loader(self, user_train_data):
         """instance a user's train loader."""
@@ -28,35 +28,32 @@ class Engine(object):
                                         target_tensor=torch.FloatTensor(user_train_data[2]))
         return DataLoader(dataset, batch_size=64, shuffle=True)
 
-
     def fed_train_single_batch(self, model_client, batch_data, optimizers):
         """train a batch and return an updated model."""
         # load batch data.
-        _, items, ratings,cv,ct = batch_data[0], batch_data[1], batch_data[2], batch_data[3], batch_data[4]
+        _, items, ratings, cv, ct = batch_data[0], batch_data[1], batch_data[2], batch_data[3], batch_data[4]
         ratings = ratings.float()
-        # reg_item_embedding = copy.deepcopy(self.server_model_param['global_item_rep'])  #服务器的全局物品表示，用于计算后续的2正则化项
 
         if self.config['use_cuda'] is True:
             items, ratings = items.cuda(), ratings.cuda()
-            # reg_item_embedding = reg_item_embedding.cuda()
 
-        optimizer, optimizer_u, optimizer_i = optimizers  #分别为客户端的优化器、用户嵌入的优化器、物品嵌入的优化器
+        optimizer, optimizer_u, optimizer_i = optimizers
         # update score function.
         optimizer.zero_grad()
         optimizer_u.zero_grad()
         optimizer_i.zero_grad()
-        ratings_pred = model_client(cv,ct)
-        loss = self.client_crit(ratings_pred.view(-1), ratings)  #计算损失值。self.client_crit 是一个损失函数（从之前的代码可知，可能是 torch.nn.BCELoss()），ratings_pred.view(-1) 将预测的评分展平为一维张量，然后与真实的评分 ratings 计算损失。
+        ratings_pred = model_client(cv, ct)
+        loss = self.client_crit(ratings_pred.view(-1), ratings)
         print("\r loss is {:.4f}".format(loss.item()), end='')
-        # regularization_term = compute_regularization(model_client, reg_item_embedding)  #计算2正则化项。
-        # loss += self.config['reg'] * regularization_term
         loss.backward()
         optimizer.step()
         optimizer_u.step()
         optimizer_i.step()
+        # 手动删除不再使用的Tensor
+        del ratings_pred
         return model_client
 
-    def aggregate_clients_params(self, round_user_params, item_cv_features, item_text_features):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
+    def aggregate_clients_params(self, round_user_params):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
         """receive client models' parameters in a round, aggregate them and store the aggregated result for server."""
         # aggregate item embedding and score function via averaged aggregation.
         t = 0
@@ -96,7 +93,7 @@ class Engine(object):
         # self.server_model_param['global_item_rep'] = global_item_rep
 
 
-    def fed_train_a_round(self, user_ids, all_train_data, round_id, item_cv_features, item_text_features):
+    def fed_train_a_round(self, user_ids, all_train_data, round_id):
         """train a round."""
         # sample users participating in single round.
         if self.config['clients_sample_ratio'] <= 1:
@@ -166,8 +163,11 @@ class Engine(object):
             round_participant_params[user] = {}
             round_participant_params[user]['embedding_item.weight'] = copy.deepcopy(
                 client_param['embedding_item.weight']).data.cpu()
+            del user_dataloader
+            del model_client
+            del client_param
         # aggregate client models in server side.
-        self.aggregate_clients_params(round_participant_params, item_cv_features, item_text_features)
+        self.aggregate_clients_params(round_participant_params)
 
 
     def fed_evaluate(self, evaluate_data, item_cv_features, item_text_features, item_ids_map,is_test=True):
@@ -209,7 +209,7 @@ class Engine(object):
             user_model.load_state_dict(user_param_dict)
             user_model.eval()
             with torch.no_grad():
-                cold_pred = user_model.froward(item_cv_content, item_text_content)
+                cold_pred = user_model(item_cv_content, item_text_content)
                 user_item_preds[user] = cold_pred.view(-1)
 
         # compute the evaluation metrics.
