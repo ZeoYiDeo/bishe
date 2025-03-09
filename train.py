@@ -14,24 +14,24 @@ parser.add_argument('--clients_sample_ratio', type=float, default=1.0)
 parser.add_argument('--clients_sample_num', type=int, default=0)
 parser.add_argument('--num_round', type=int, default=100)
 parser.add_argument('--local_epoch', type=int, default=1)
-parser.add_argument('--server_epoch', type=int, default=1)
+# parser.add_argument('--server_epoch', type=int, default=1)
 parser.add_argument('--lr_eta', type=int, default=80)
 parser.add_argument('--reg', type=float, default=1.0)
-parser.add_argument('--batch_size', type=int, default=256)
+parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('--optimizer', type=str, default='sgd')
-parser.add_argument('--lr_client', type=float, default=0.05)
-parser.add_argument('--lr_server', type=float, default=0.005)
+parser.add_argument('--lr_client', type=float, default=0.01)
+# parser.add_argument('--lr_server', type=float, default=0.005)
 parser.add_argument('--dataset', type=str, default='Bili_Food')
 parser.add_argument('--num_users', type=int)
 parser.add_argument('--num_items_train', type=int)
 parser.add_argument('--num_items_vali', type=int)
 parser.add_argument('--num_items_test', type=int)
 parser.add_argument('--content_dim', type=int)
-parser.add_argument('--latent_dim', type=int, default=768)
+parser.add_argument('--latent_dim', type=int, default=384)
 parser.add_argument('--num_negative', type=int, default=5)
 # 修改网络层配置
-parser.add_argument('--server_model_layers', type=str, default='1536,768,384')
-parser.add_argument('--client_model_layers', type=str, default='768,384,128')  # 从latent_dim开始
+# parser.add_argument('--server_model_layers', type=str, default='1536,768,384')
+parser.add_argument('--client_model_layers', type=str, default='384,128,64')  # 从latent_dim开始
 parser.add_argument('--recall_k', type=str, default='20,50,100')
 parser.add_argument('--l2_regularization', type=float, default=0.)
 parser.add_argument('--use_cuda', type=bool, default=True)
@@ -44,10 +44,7 @@ if len(config['recall_k']) > 1:
     config['recall_k'] = [int(item) for item in config['recall_k'].split(',')]
 else:
     config['recall_k'] = [int(config['recall_k'])]
-if len(config['server_model_layers']) > 1:
-    config['server_model_layers'] = [int(item) for item in config['server_model_layers'].split(',')]
-else:
-    config['server_model_layers'] = int(config['server_model_layers'])
+
 if len(config['client_model_layers']) > 1:
     config['client_model_layers'] = [int(item) for item in config['client_model_layers'].split(',')]
 else:
@@ -115,7 +112,7 @@ for round in range(config['num_round']):
     all_train_data = negative_sampling(train_data, config['num_negative'])
     logging.info('-' * 80)
     logging.info('Training phase!')
-    engine.fed_train_a_round(user_ids, all_train_data, round, train_item_img_features, train_item_text_features)
+    engine.fed_train_a_round(user_ids, all_train_data, round)
 
     logging.info('-' * 80)
     logging.info('Testing phase!')
@@ -168,9 +165,7 @@ for round in range(config['num_round']):
 
 current_time = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
 str = current_time + '-' + 'latent_dim: ' + str(config['latent_dim']) + '-' + 'lr_client: ' + str(config['lr_client']) \
-      + '-' + 'lr_server: ' + str(config['lr_server']) + '-' + 'local_epoch: ' + str(config['local_epoch']) + '-' + \
-      'server_epoch: ' + str(config['server_epoch']) + '-' + 'server_model_layers: ' + \
-      str(config['server_model_layers']) + '-' + 'client_model_layers: ' + str(config['client_model_layers']) + '-' \
+      +  '-' + 'local_epoch: ' + str(config['local_epoch']) + '-'  + 'client_model_layers: ' + str(config['client_model_layers']) + '-' \
       'clients_sample_ratio: ' + str(config['clients_sample_ratio']) + '-' + 'num_round: ' + str(config['num_round']) \
       + '-' + 'negatives: ' + str(config['num_negative']) + '-' + 'lr_eta: ' + str(config['lr_eta']) + '-' + \
       'batch_size: ' + str(config['batch_size']) + '-' + 'Recall: ' + str(test_recalls[final_test_round]) + '-' \
@@ -186,12 +181,12 @@ logging.info('fedcs')
 logging.info('recall_list: {}'.format(test_recalls))
 logging.info('precision_list: {}'.format(test_precisions))
 logging.info('ndcg_list: {}'.format(test_ndcgs))
-logging.info('clients_sample_ratio: {}, lr_eta: {}, bz: {}, lr_client: {}, lr_server: {}, local_epoch: {},'
-             'server_epoch: {}, client_model_layers: {}, server_model_layers: {}, recall_k: {}, dataset: {}, '
+logging.info('clients_sample_ratio: {}, lr_eta: {}, bz: {}, lr_client: {}, local_epoch: {},'
+             'client_model_layers: {}, recall_k: {}, dataset: {}, '
              'factor: {}, negatives: {}, reg: {}'.format(config['clients_sample_ratio'], config['lr_eta'],
-                                                         config['batch_size'], config['lr_client'], config['lr_server'],
-                                                         config['local_epoch'], config['server_epoch'],
-                                                         config['client_model_layers'], config['server_model_layers'],
+                                                         config['batch_size'], config['lr_client'],
+                                                         config['local_epoch'],
+                                                         config['client_model_layers'],
                                                          config['recall_k'], config['dataset'], config['latent_dim'],
                                                          config['num_negative'], config['reg']))
 logging.info('Best test recall: {}, precision: {}, ndcg: {} at round {}'.format(test_recalls[final_test_round],
