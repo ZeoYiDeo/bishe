@@ -17,9 +17,9 @@ parser.add_argument('--local_epoch', type=int, default=1)
 # parser.add_argument('--server_epoch', type=int, default=1)
 parser.add_argument('--lr_eta', type=int, default=80)
 parser.add_argument('--reg', type=float, default=1.0)
-parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--optimizer', type=str, default='sgd')
-parser.add_argument('--lr_client', type=float, default=0.01)
+parser.add_argument('--lr_client', type=float, default=0.05)
 # parser.add_argument('--lr_server', type=float, default=0.005)
 parser.add_argument('--dataset', type=str, default='Bili_Food')
 parser.add_argument('--num_users', type=int)
@@ -31,9 +31,9 @@ parser.add_argument('--latent_dim', type=int, default=384)
 parser.add_argument('--num_negative', type=int, default=5)
 # 修改网络层配置
 # parser.add_argument('--server_model_layers', type=str, default='1536,768,384')
-parser.add_argument('--client_model_layers', type=str, default='384,128,64')  # 从latent_dim开始
+parser.add_argument('--client_model_layers', type=str, default='384,256,128,64')  # 从latent_dim开始
 parser.add_argument('--recall_k', type=str, default='20,50,100')
-parser.add_argument('--l2_regularization', type=float, default=0.)
+parser.add_argument('--l2_regularization', type=float, default=1e-4)  # 添加或修改L2正则化系数
 parser.add_argument('--use_cuda', type=bool, default=True)
 parser.add_argument('--device_id', type=int, default=1)
 args = parser.parse_args()
