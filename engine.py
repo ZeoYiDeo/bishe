@@ -51,6 +51,7 @@ class Engine(object):
         optimizer_i.step()
         # 手动删除不再使用的Tensor
         del ratings_pred
+        del loss
         return model_client
 
     def aggregate_clients_params(self, round_user_params):  #在一轮训练中接收客户端模型的参数，对这些参数进行聚合操作，然后将聚合后的结果存储在服务器端。
@@ -70,27 +71,6 @@ class Engine(object):
         for key in self.server_model_param.keys():
             self.server_model_param[key].data = self.server_model_param[key].data / len(round_user_params)
 
-        # train the item representation learning module.
-        # item_cv_content = torch.tensor(item_cv_features)
-        # item_text_content = torch.tensor(item_text_features)
-        # target = self.server_model_param['embedding_item.weight'].data
-        # if self.config['use_cuda'] is True:
-        #     item_cv_content = item_cv_content.cuda()
-        #     item_text_content = item_text_content.cuda()
-        #     target = target.cuda()
-        # self.server_model.train()
-        # for epoch in range(self.config['server_epoch']):
-        #     self.server_opt.zero_grad()
-        #     logit_rep = self.server_model(item_cv_content, item_text_content)
-        #     loss = self.server_crit(logit_rep, target)
-        #     loss.backward()
-        #     self.server_opt.step()
-
-        # store the global item representation learned by server model.
-        # self.server_model.eval()
-        # with torch.no_grad():
-        #     global_item_rep = self.server_model(item_cv_content, item_text_content)
-        # self.server_model_param['global_item_rep'] = global_item_rep
 
 
     def fed_train_a_round(self, user_ids, all_train_data, round_id):
@@ -101,18 +81,6 @@ class Engine(object):
             participants = np.random.choice(user_ids, num_participants, replace=False)
         else:
             participants = np.random.choice(user_ids, self.config['clients_sample_num'], replace=False)
-
-        # initialize server parameters for the first round.
-        # if round_id == 0:
-        #     item_cv_content = torch.tensor(item_cv_features)
-        #     item_text_content = torch.tensor(item_text_features)
-        #     if self.config['use_cuda'] is True:
-        #         item_cv_content = item_cv_content.cuda()
-        #         item_text_content = item_text_content.cuda()
-        #     self.server_model.eval()
-        #     with torch.no_grad():
-        #         global_item_rep = self.server_model(item_cv_content, item_text_content)
-        #     self.server_model_param['global_item_rep'] = global_item_rep
 
         # store users' model parameters of current round.
         round_participant_params = {}
@@ -187,15 +155,7 @@ class Engine(object):
 
         item_cv_content = torch.tensor(item_cv_features)
         item_text_content = torch.tensor(item_text_features)
-        # if self.config['use_cuda'] is True:
-        #     item_cv_content = item_cv_content.cuda()
-        #     item_text_content = item_text_content.cuda()
 
-        # obtain cold-start items' latent representation via server model.
-        # current_model = copy.deepcopy(self.server_model)
-        # current_model.eval()
-        # with torch.no_grad():
-        #     item_rep = current_model(item_cv_content, item_text_content)
 
         # obtain cola-start items' prediction for each user.
         user_ids = evaluate_data['uid'].unique()
