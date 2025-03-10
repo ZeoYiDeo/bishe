@@ -35,7 +35,7 @@ class Client(torch.nn.Module):
 
         # 最终输出层
         self.affine_output = torch.nn.Linear(in_features=layers[-1], out_features=1)
-        self.dropout = torch.nn.Dropout(0.3)
+        self.dropout = torch.nn.Dropout(0.2)
         self.logistic = torch.nn.Sigmoid()
 
     def forward(self, item_cv, item_txt):
