@@ -213,9 +213,9 @@ def load_data(data_file):
     assert len(test_item_ids_map) <= 2378, f"测试集映射大小 ({len(test_item_ids_map)}) 超过配置值 (2378)"
     assert len(vali_item_ids_map) <= 2378, f"验证集映射大小 ({len(vali_item_ids_map)}) 超过配置值 (2378)"
 
-    data_dict = {'train_data':train_id_data,'train_img_features':train_img_features,'train_text_features':train_text_features,'train_item_ids_map':train_item_ids,
-                 'test_data':test_id_data,'test_img_features':test_img_features,'test_text_features':test_text_features,'test_item_ids_map':test_item_ids,
-                 'valid_data':valid_id_data,'valid_img_features':valid_img_features,'valid_text_features':valid_text_features,'vali_item_ids_map':valid_item_ids,
+    data_dict = {'train_data':train_id_data,'train_img_features':train_img_features,'train_text_features':train_text_features,'train_item_ids_map':train_item_ids_map,
+                 'test_data':test_id_data,'test_img_features':test_img_features,'test_text_features':test_text_features,'test_item_ids_map':test_item_ids_map,
+                 'valid_data':valid_id_data,'valid_img_features':valid_img_features,'valid_text_features':valid_text_features,'vali_item_ids_map':vali_item_ids_map,
                  'user_ids':user_ids,'item_ids':item_ids
                  }
     return data_dict
