@@ -13,6 +13,16 @@ import pandas as pd
 from tqdm import tqdm
 
 
+# Checkpoints
+def save_checkpoint(model, model_dir):
+    torch.save(model.state_dict(), model_dir)
+
+
+def resume_checkpoint(model, model_dir, device_id):
+    state_dict = torch.load(model_dir,
+                            map_location=lambda storage, loc: storage.cuda(device=device_id))  # ensure all storage are on gpu
+    model.load_state_dict(state_dict)
+
 
 # Hyper params
 def use_cuda(enabled, device_id=0):
@@ -157,7 +167,7 @@ def load_data(data_file):
     text_feature_array = text_feature_matrix.numpy()
 
     # 读取训练数据
-    train_id_data = pd.read_csv(data_file + '/train.csv', header=None)
+    train_id_data = pd.read_csv(data_file + '/train_data.csv', header=None)
     train_id_data.columns = ['iid', 'uid']
 
 
@@ -169,7 +179,7 @@ def load_data(data_file):
     # train_item_ids_map = {iid: i for i, iid in enumerate(train_item_ids)}
 
     # 读取测试数据
-    test_id_data = pd.read_csv(data_file + '/test.csv', header=None)
+    test_id_data = pd.read_csv(data_file + '/test_data.csv', header=None)
     test_id_data.columns = ['iid', 'uid']
 
     # test_item_ids = list(set(test_id_data.iloc[:, 0]))
@@ -179,7 +189,7 @@ def load_data(data_file):
     # test_item_ids_map = {iid: i for i, iid in enumerate(test_item_ids)}
 
     # 读取验证数据
-    valid_id_data = pd.read_csv(data_file + '/vali.csv', header=None)
+    valid_id_data = pd.read_csv(data_file + '/val_data.csv', header=None)
     valid_id_data.columns = ['iid', 'uid']
 
     # valid_item_ids = list(set(valid_id_data.iloc[:, 0]))
@@ -203,9 +213,9 @@ def load_data(data_file):
     assert len(test_item_ids_map) <= 2378, f"测试集映射大小 ({len(test_item_ids_map)}) 超过配置值 (2378)"
     assert len(vali_item_ids_map) <= 2378, f"验证集映射大小 ({len(vali_item_ids_map)}) 超过配置值 (2378)"
 
-    data_dict = {'train_data':train_id_data,'train_img_features':train_img_features,'train_text_features':train_text_features,'train_item_ids_map':train_item_ids_map,
-                 'test_data':test_id_data,'test_img_features':test_img_features,'test_text_features':test_text_features,'test_item_ids_map':test_item_ids_map,
-                 'valid_data':valid_id_data,'valid_img_features':valid_img_features,'valid_text_features':valid_text_features,'vali_item_ids_map':vali_item_ids_map,
+    data_dict = {'train_data':train_id_data,'train_img_features':train_img_features,'train_text_features':train_text_features,'train_item_ids_map':train_item_ids,
+                 'test_data':test_id_data,'test_img_features':test_img_features,'test_text_features':test_text_features,'test_item_ids_map':test_item_ids,
+                 'valid_data':valid_id_data,'valid_img_features':valid_img_features,'valid_text_features':valid_text_features,'vali_item_ids_map':valid_item_ids,
                  'user_ids':user_ids,'item_ids':item_ids
                  }
     return data_dict
@@ -239,139 +249,68 @@ def negative_sampling(train_data, num_negatives):
     return train_dict
 
 
-def compute_metrics(evaluate_data, user_item_preds, item_ids_map, recall_k, is_test=True):
+def compute_metrics(evaluate_data, user_item_preds, item_ids_map, recall_k):
     """compute evaluation metrics for cold-start items."""
-    if not isinstance(recall_k, list) or not recall_k:
-        recall_k = [20, 50, 100]
-
-    max_k = max(recall_k)
-    print(f"\nRecall@K values: {recall_k}")
-    print(f"最大K值: {max_k}")
-
-    print(f"评估数据大小: {len(evaluate_data)}")
-    print(f"用户预测数量: {len(user_item_preds)}")
-    print(f"物品映射大小: {len(item_ids_map)}")
-
+    """input:
+    evaluate_data: (uid, iid) dataframe.
+    user_item_preds: cold-start item prediction for each user.
+    item_ids_map: {ori_id: reindex_id} dict.
+    recall_k: top_k metrics.
+       output:
+    recall, precision, ndcg
+    """
     pred = []
-    target_rows = []
-    target_columns = []
+    target_rows, target_columns = [], []
     temp = 0
+    for uid in user_item_preds.keys():
+        # predicted location for each user.
+        user_pred = user_item_preds[uid]
+        _, user_pred_all = user_pred.topk(k=recall_k[-1])
+        user_pred_all = user_pred_all.cpu()
+        pred.append(user_pred_all.tolist())
 
-    valid_users = set(user_item_preds.keys())
+        # cold-start items real location for each user.
+        user_cs_items = list(evaluate_data[evaluate_data['uid']==uid]['iid'].unique())
+        # record sparse target matrix indexes.
+        for item in user_cs_items:
+            target_rows.append(temp)
+            target_columns.append(item_ids_map[item])
+        temp += 1
+    pred = np.array(pred)
+    target = sp.coo_matrix(
+        (np.ones(len(evaluate_data)),
+         (target_rows, target_columns)),
+        shape=[len(pred), len(item_ids_map)]
+    )
+    recall, precision, ndcg = [], [], []
+    idcg_array = np.arange(recall_k[-1]) + 1
+    idcg_array = 1 / np.log2(idcg_array + 1)
+    idcg_table = np.zeros(recall_k[-1])
+    for i in range(recall_k[-1]):
+        idcg_table[i] = np.sum(idcg_array[:(i + 1)])
+    for at_k in recall_k:
+        preds_k = pred[:, :at_k]
+        x = sp.lil_matrix(target.shape)
+        x.rows = preds_k
+        x.data = np.ones_like(preds_k)
 
-    for uid in valid_users:
-        try:
-            user_pred = user_item_preds[uid]
-            k = min(max_k, len(user_pred))
+        z = np.multiply(target.todense(), x.todense())
+        recall.append(np.mean(np.divide((np.sum(z, 1)), np.sum(target, 1))))
+        precision.append(np.mean(np.sum(z, 1) / at_k))
 
-            _, user_pred_all = user_pred.topk(k=k)
-            # 直接转换为Python列表
-            user_pred_all = user_pred_all.cpu().tolist()
+        x_coo = sp.coo_matrix(x.todense())
+        rows = x_coo.row
+        cols = x_coo.col
+        target_csr = target.tocsr()
+        dcg_array = target_csr[(rows, cols)].A1.reshape((preds_k.shape[0], -1))
+        dcg = np.sum(dcg_array * idcg_array[:at_k].reshape((1, -1)), axis=1)
+        idcg = np.sum(target, axis=1) - 1
+        idcg[np.where(idcg >= at_k)] = at_k - 1
+        idcg = idcg_table[idcg.astype(int)]
+        ndcg.append(np.mean(dcg / idcg))
 
-            # 确保预测值在有效范围内
-            valid_preds = [p for p in user_pred_all if p < len(item_ids_map)]
+    return recall, precision, ndcg
 
-            if valid_preds:
-                # 填充到最大长度
-                while len(valid_preds) < max_k:
-                    valid_preds.append(0)
-                pred.append(valid_preds[:max_k])  # 截取到max_k长度
-
-                # 获取用户的实际物品
-                user_items = evaluate_data[evaluate_data['uid'] == uid]['iid'].unique()
-                valid_items = [item for item in user_items if item in item_ids_map]
-
-                if valid_items:
-                    for item in valid_items:
-                        target_rows.append(temp)
-                        target_columns.append(item_ids_map[item])
-                temp += 1
-
-        except Exception as e:
-            print(f"处理用户 {uid} 时出错: {str(e)}")
-            continue
-
-    if not pred:
-        print("警告：没有有效的预测结果")
-        return [0.0] * len(recall_k), [0.0] * len(recall_k), [0.0] * len(recall_k)
-
-    try:
-        # 转换为numpy数组
-        pred = np.array(pred)
-
-        print(f"预测矩阵形状: {pred.shape}")
-        print(f"目标矩阵行数: {temp}")
-        print(f"目标矩阵列数: {len(item_ids_map)}")
-
-        # 创建目标矩阵
-        target = sp.coo_matrix(
-            (np.ones(len(target_columns)),
-             (target_rows, target_columns)),
-            shape=[temp, len(item_ids_map)]
-        ).tocsr()  # 转换为CSR格式以提高效率
-
-        recall, precision, ndcg = [], [], []
-
-        for at_k in recall_k:
-            actual_k = min(at_k, pred.shape[1])
-            preds_k = pred[:, :actual_k]
-
-            # 创建预测矩阵
-            x = sp.lil_matrix((temp, len(item_ids_map)))
-            for i, user_preds in enumerate(preds_k):
-                valid_indices = [p for p in user_preds if 0 <= p < len(item_ids_map)]
-                if valid_indices:
-                    x.rows[i] = valid_indices
-                    x.data[i] = [1.0] * len(valid_indices)
-
-            # 转换为CSR格式
-            x = x.tocsr()
-
-            # 计算交集
-            intersect = target.multiply(x)
-
-            # 计算recall
-            target_sums = np.asarray(target.sum(axis=1)).flatten()
-            target_sums[target_sums == 0] = 1  # 避免除零
-            recall_scores = np.asarray(intersect.sum(axis=1)).flatten() / target_sums
-            recall.append(float(np.mean(recall_scores)))
-
-            # 计算precision
-            precision_scores = np.asarray(intersect.sum(axis=1)).flatten() / actual_k
-            precision.append(float(np.mean(precision_scores)))
-
-            # 计算NDCG
-            dcg = np.zeros(temp)
-            idcg = np.zeros(temp)
-
-            for i in range(actual_k):
-                dcg += np.asarray(intersect[:, i].todense()).flatten() / np.log2(i + 2)
-
-            for i in range(temp):
-                relevant_count = int(target[i].sum())
-                ideal_dcg = sum(1.0 / np.log2(j + 2) for j in range(min(relevant_count, actual_k)))
-                idcg[i] = ideal_dcg if ideal_dcg > 0 else 1.0
-
-            ndcg_score = np.mean(dcg / idcg)
-            ndcg.append(float(ndcg_score))
-
-        # 打印详细结果
-        print("\n评估结果:")
-        for i, k in enumerate(recall_k):
-            print(f"@{k}:")
-            print(f"  Recall: {recall[i]:.4f}")
-            print(f"  Precision: {precision[i]:.4f}")
-            print(f"  NDCG: {ndcg[i]:.4f}")
-
-        return recall, precision, ndcg
-
-    except Exception as e:
-        print(f"计算指标时出错: {str(e)}")
-        print(f"Debug信息:")
-        print(f"pred.shape: {pred.shape if isinstance(pred, np.ndarray) else 'not an array'}")
-        print(f"target_rows数量: {len(target_rows)}")
-        print(f"target_columns数量: {len(target_columns)}")
-        return [0.0] * len(recall_k), [0.0] * len(recall_k), [0.0] * len(recall_k)
 
 
 def compute_regularization(model, parameter_label):
@@ -385,4 +324,7 @@ def compute_regularization(model, parameter_label):
 # 检查参数名称：判断参数名称是否为 embedding_item.weight。
 # 计算并返回损失：如果参数名称匹配，使用 reg_fn 计算该参数与 parameter_label 之间的均方误差损失，并将结果存储在 reg_loss 中，然后立即返回该损失值。
 
-
+if __name__ == '__main__':
+    data_dict = load_data('../data/Bili_Food')
+    print(len(data_dict['user_ids']))
+    print(len(data_dict['item_ids']))
